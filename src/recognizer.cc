@@ -23,7 +23,7 @@
 using namespace fst;
 using namespace kaldi::nnet3;
 
-Recognizer::Recognizer(Model *model, float sample_frequency) : model_(model), spk_model_(0), sample_frequency_(sample_frequency) {
+Recognizer::Recognizer(Model *model, float sample_frequency) : model_(model), spk_model_(0), decoding_config_(model->nnet3_decoding_config_), sample_frequency_(sample_frequency) {
 
     model_->Ref();
 
@@ -38,7 +38,7 @@ Recognizer::Recognizer(Model *model, float sample_frequency) : model_(model), sp
         }
     }
 
-    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
+    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
             model_->hclg_fst_ ? *model_->hclg_fst_ : *decode_fst_,
@@ -48,7 +48,7 @@ Recognizer::Recognizer(Model *model, float sample_frequency) : model_(model), sp
     InitRescoring();
 }
 
-Recognizer::Recognizer(Model *model, float sample_frequency, char const *grammar) : model_(model), spk_model_(0), sample_frequency_(sample_frequency)
+Recognizer::Recognizer(Model *model, float sample_frequency, char const *grammar) : model_(model), spk_model_(0), decoding_config_(model->nnet3_decoding_config_), sample_frequency_(sample_frequency)
 {
     model_->Ref();
 
@@ -61,7 +61,7 @@ Recognizer::Recognizer(Model *model, float sample_frequency, char const *grammar
         KALDI_WARN << "Runtime graphs are not supported by this model";
     }
 
-    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
+    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
             model_->hclg_fst_ ? *model_->hclg_fst_ : *decode_fst_,
@@ -71,7 +71,7 @@ Recognizer::Recognizer(Model *model, float sample_frequency, char const *grammar
     InitRescoring();
 }
 
-Recognizer::Recognizer(Model *model, float sample_frequency, SpkModel *spk_model) : model_(model), spk_model_(spk_model), sample_frequency_(sample_frequency) {
+Recognizer::Recognizer(Model *model, float sample_frequency, SpkModel *spk_model) : model_(model), spk_model_(spk_model), decoding_config_(model->nnet3_decoding_config_), sample_frequency_(sample_frequency) {
 
     model_->Ref();
     spk_model->Ref();
@@ -87,7 +87,7 @@ Recognizer::Recognizer(Model *model, float sample_frequency, SpkModel *spk_model
         }
     }
 
-    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
+    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
             model_->hclg_fst_ ? *model_->hclg_fst_ : *decode_fst_,
@@ -174,7 +174,7 @@ void Recognizer::CleanUp()
         delete feature_pipeline_;
 
         feature_pipeline_ = new kaldi::OnlineNnet2FeaturePipeline (model_->feature_info_);
-        decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
+        decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
             model_->hclg_fst_ ? *model_->hclg_fst_ : *decode_fst_,
@@ -305,7 +305,7 @@ void Recognizer::SetGrm(char const *grammar)
 
     silence_weighting_ = new kaldi::OnlineSilenceWeighting(*model_->trans_model_, model_->feature_info_.silence_weighting_config, 3);
     feature_pipeline_ = new kaldi::OnlineNnet2FeaturePipeline (model_->feature_info_);
-    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(model_->nnet3_decoding_config_,
+    decoder_ = new kaldi::SingleUtteranceNnet3IncrementalDecoder(decoding_config_,
             *model_->trans_model_,
             *model_->decodable_info_,
             *decode_fst_,
@@ -326,12 +326,37 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
     obj = json::JSON::Load(grammar);
 
     grammar_path_ids_.clear();
+    decoding_config_ = model_->nnet3_decoding_config_;
 
     // The legacy API accepts an array of phrases and builds a small n-gram
     // language model from it. Named paths are intentionally different: each
     // has an opaque terminal output label so N-best results can report which
     // supplied path produced a hypothesis.
     if (obj.JSONType() == json::JSON::Class::Object && obj.hasKey("paths")) {
+        if (obj.hasKey("decoder")) {
+            const json::JSON &decoder = obj.at("decoder");
+            if (decoder.JSONType() != json::JSON::Class::Object) {
+                KALDI_ERR << "Decoder options must be an object";
+            }
+            if (decoder.hasKey("beam")) {
+                bool ok;
+                decoding_config_.beam = decoder.at("beam").ToFloat(ok);
+                if (!ok || decoding_config_.beam <= 0.0)
+                    KALDI_ERR << "Decoder beam must be a positive number";
+            }
+            if (decoder.hasKey("lattice_beam")) {
+                bool ok;
+                decoding_config_.lattice_beam = decoder.at("lattice_beam").ToFloat(ok);
+                if (!ok || decoding_config_.lattice_beam <= 0.0)
+                    KALDI_ERR << "Decoder lattice_beam must be a positive number";
+            }
+            if (decoder.hasKey("max_active")) {
+                bool ok;
+                decoding_config_.max_active = decoder.at("max_active").ToInt(ok);
+                if (!ok || decoding_config_.max_active < 2)
+                    KALDI_ERR << "Decoder max_active must be at least two";
+            }
+        }
         const json::JSON &paths = obj.at("paths");
         if (paths.JSONType() != json::JSON::Class::Array || paths.length() == 0) {
             KALDI_WARN << "Expecting a non-empty paths array, got: '" << grammar << "'";

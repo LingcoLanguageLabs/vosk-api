@@ -79,6 +79,9 @@ class Recognizer {
 
         Model *model_ = nullptr;
         SingleUtteranceNnet3IncrementalDecoder *decoder_ = nullptr;
+        // A recognizer owns its decoder options so a named grammar can widen
+        // its lattice without changing a Model shared by other threads.
+        kaldi::LatticeIncrementalDecoderConfig decoding_config_;
         fst::LookaheadFst<fst::StdArc, int32> *decode_fst_ = nullptr;
         fst::StdVectorFst *g_fst_ = nullptr; // dynamically constructed grammar
         OnlineNnet2FeaturePipeline *feature_pipeline_ = nullptr;

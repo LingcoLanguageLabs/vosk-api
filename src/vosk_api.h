@@ -138,7 +138,8 @@ VoskRecognizer *vosk_recognizer_new_spk(VoskModel *model, float sample_rate, Vos
  *                 The optional named-path format preserves opaque path IDs in
  *                 the final lattice while retaining the JSON-array API:
  *                 {"paths":[{"id":"command-a","text":"one two three"}],
- *                  "fallback":{"id":"other","type":"model"}}
+ *                  "fallback":{"id":"other","type":"model"},
+ *                  "decoder":{"beam":30.0,"lattice_beam":30.0}}
  *                 `fallback` is optional and adds the model's normal language
  *                 graph as another named path.  With max alternatives enabled,
  *                 every N-best alternative may include `grammar_path`; the
@@ -146,6 +147,9 @@ VoskRecognizer *vosk_recognizer_new_spk(VoskModel *model, float sample_rate, Vos
  *                 path that survives decoding. Scores expose `confidence`,
  *                 `acoustic_likelihood`, and `graph_likelihood`. They are raw
  *                 decoder likelihoods, not calibrated percentages.
+ *                 `decoder` is optional and can override positive `beam`,
+ *                 `lattice_beam`, and integer `max_active` values for this
+ *                 recognizer only; it never mutates the shared Model.
  *
  *  @returns recognizer object or NULL if problem occured */
 VoskRecognizer *vosk_recognizer_new_grm(VoskModel *model, float sample_rate, const char *grammar);
