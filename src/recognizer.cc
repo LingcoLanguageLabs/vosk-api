@@ -757,11 +757,15 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
         for (ArcIterator<Lattice> arc_iter(lat, state); !arc_iter.Done();
              arc_iter.Next()) {
           const LatticeArc &arc = arc_iter.Value();
-          if (arc.olabel < grammar_path_label_base_ ||
-              arc.olabel >= grammar_path_label_base_ + grammar_path_ids_.size())
+          // ConvertLattice preserves the marker as an input label here. The
+          // N-best formatter inverts its lattice before turning labels into
+          // words, which is why the same marker appears as a grammar_path in
+          // its public hypothesis output.
+          if (arc.ilabel < grammar_path_label_base_ ||
+              arc.ilabel >= grammar_path_label_base_ + grammar_path_ids_.size())
             continue;
 
-          int32 path_index = arc.olabel - grammar_path_label_base_;
+          int32 path_index = arc.ilabel - grammar_path_label_base_;
           LatticeWeight cost = Times(forward_costs[state], arc.weight);
           cost = Times(cost, lat.Final(arc.nextstate));
           path_costs[path_index] = Plus(path_costs[path_index], cost);
