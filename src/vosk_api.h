@@ -135,16 +135,17 @@ VoskRecognizer *vosk_recognizer_new_spk(VoskModel *model, float sample_rate, Vos
  *  @param grammar The string with the list of phrases to recognize as JSON array of strings,
  *                 for example "["one two three four five", "[unk]"]".
  *
- *                 Lingco's structured route extension preserves the supplied
- *                 route identity in N-best output.  It is opt-in and leaves
- *                 the JSON-array API unchanged:
- *                 {"routes":[{"id":"accepted:0","text":"one two three"},
- *                            {"id":"rejected","text":"[unk]"}]}
- *                 Set max alternatives high enough to return the routes.  Each
- *                 alternative then includes `grammar_route`, plus the legacy
- *                 combined `confidence` and its `acoustic_likelihood` and
- *                 `graph_likelihood` components.  These are raw decoder
- *                 likelihoods, not calibrated percentages.
+ *                 The optional named-path format preserves opaque path IDs in
+ *                 the final lattice while retaining the JSON-array API:
+ *                 {"paths":[{"id":"command-a","text":"one two three"}],
+ *                  "fallback":{"id":"other","type":"model"}}
+ *                 `fallback` is optional and adds the model's normal language
+ *                 graph as another named path.  With max alternatives enabled,
+ *                 every N-best alternative may include `grammar_path`; the
+ *                 result also includes one best `path_scores` entry per named
+ *                 path that survives decoding. Scores expose `confidence`,
+ *                 `acoustic_likelihood`, and `graph_likelihood`. They are raw
+ *                 decoder likelihoods, not calibrated percentages.
  *
  *  @returns recognizer object or NULL if problem occured */
 VoskRecognizer *vosk_recognizer_new_grm(VoskModel *model, float sample_rate, const char *grammar);
@@ -162,8 +163,8 @@ void vosk_recognizer_set_spk_model(VoskRecognizer *recognizer, VoskSpkModel *spk
 /** Reconfigures recognizer to use grammar
  *
  * @param recognizer   Already running VoskRecognizer
- * @param grammar      Set of phrases in JSON array of strings, a structured
- *                     route grammar as documented above, or "[]" to use the
+ * @param grammar      Set of phrases in JSON array of strings, a named-path
+ *                     grammar as documented above, or "[]" to use the
  *                     default model graph.
  *                     See also vosk_recognizer_new_grm
  */

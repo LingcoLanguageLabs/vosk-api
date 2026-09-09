@@ -287,7 +287,7 @@ void Recognizer::SetGrm(char const *grammar)
     }
 
     delete decode_fst_;
-    grammar_route_ids_.clear();
+    grammar_path_ids_.clear();
 
     if (!strcmp(grammar, "[]")) {
         decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *model_->g_fst_, model_->disambig_);
@@ -325,17 +325,16 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
     json::JSON obj;
     obj = json::JSON::Load(grammar);
 
-    grammar_route_ids_.clear();
+    grammar_path_ids_.clear();
 
     // The legacy API accepts an array of phrases and builds a small n-gram
-    // language model from it.  A route grammar is intentionally different:
-    // each phrase has an opaque terminal output label so N-best results can
-    // report which supplied route produced a path.  This is the foundation
-    // for a single-decode accepted-vs-reject comparison.
-    if (obj.JSONType() == json::JSON::Class::Object && obj.hasKey("routes")) {
-        const json::JSON &routes = obj.at("routes");
-        if (routes.JSONType() != json::JSON::Class::Array || routes.length() == 0) {
-            KALDI_WARN << "Expecting a non-empty routes array, got: '" << grammar << "'";
+    // language model from it. Named paths are intentionally different: each
+    // has an opaque terminal output label so N-best results can report which
+    // supplied path produced a hypothesis.
+    if (obj.JSONType() == json::JSON::Class::Object && obj.hasKey("paths")) {
+        const json::JSON &paths = obj.at("paths");
+        if (paths.JSONType() != json::JSON::Class::Array || paths.length() == 0) {
+            KALDI_WARN << "Expecting a non-empty paths array, got: '" << grammar << "'";
             return;
         }
 
@@ -344,17 +343,17 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
         StdVectorFst::StateId start = g_fst_->AddState();
         g_fst_->SetStart(start);
 
-        for (int i = 0; i < routes.length(); i++) {
-            const json::JSON &route = routes.at(i);
-            if (route.JSONType() != json::JSON::Class::Object ||
-                !route.hasKey("id") || !route.hasKey("text")) {
-                KALDI_ERR << "Each grammar route requires string id and text fields";
+        for (int i = 0; i < paths.length(); i++) {
+            const json::JSON &path = paths.at(i);
+            if (path.JSONType() != json::JSON::Class::Object ||
+                !path.hasKey("id") || !path.hasKey("text")) {
+                KALDI_ERR << "Each grammar path requires string id and text fields";
             }
             bool id_ok, text_ok;
-            string id = route.at("id").ToString(id_ok);
-            string line = route.at("text").ToString(text_ok);
+            string id = path.at("id").ToString(id_ok);
+            string line = path.at("text").ToString(text_ok);
             if (!id_ok || !text_ok) {
-                KALDI_ERR << "Each grammar route requires string id and text fields";
+                KALDI_ERR << "Each grammar path requires string id and text fields";
             }
 
             StdVectorFst::StateId state = start;
@@ -373,13 +372,41 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
             }
 
             StdVectorFst::StateId final = g_fst_->AddState();
-            int32 route_label = grammar_route_label_base_ + i;
-            g_fst_->AddArc(state, StdArc(0, route_label,
+            int32 path_label = grammar_path_label_base_ + i;
+            g_fst_->AddArc(state, StdArc(0, path_label,
                 TropicalWeight::One(), final));
             g_fst_->SetFinal(final, TropicalWeight::One());
-            grammar_route_ids_.push_back(id);
+            grammar_path_ids_.push_back(id);
         }
 
+        // Optionally add the model's normal language graph as one more named
+        // path. This is a generic competing hypothesis, not a product-level
+        // accept/reject decision; callers interpret the returned path scores.
+        if (obj.hasKey("fallback")) {
+            const json::JSON &fallback = obj.at("fallback");
+            bool id_ok, type_ok;
+            string id = fallback.at("id").ToString(id_ok);
+            string type = fallback.at("type").ToString(type_ok);
+            if (!id_ok || !type_ok || type != "model" || !model_->g_fst_) {
+                KALDI_ERR << "Fallback requires id and type: model on a dynamic-graph model";
+            }
+
+            StdVectorFst model_paths(*model_->g_fst_);
+            StdVectorFst::StateId final = model_paths.AddState();
+            int32 path_label = grammar_path_label_base_ + grammar_path_ids_.size();
+            int32 existing_states = final;
+            for (StdVectorFst::StateId state = 0; state < existing_states; state++) {
+                if (model_paths.Final(state) == TropicalWeight::Zero())
+                    continue;
+                model_paths.SetFinal(state, TropicalWeight::Zero());
+                model_paths.AddArc(state, StdArc(0, path_label, TropicalWeight::One(), final));
+            }
+            model_paths.SetFinal(final, TropicalWeight::One());
+            fst::Union(g_fst_, model_paths);
+            grammar_path_ids_.push_back(id);
+        }
+
+        fst::ArcSort(g_fst_, fst::ILabelCompare<StdArc>());
         decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *g_fst_, model_->disambig_);
         return;
     }
@@ -710,6 +737,50 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
     fst::ConvertNbestToVector(nbest_lat, &nbest_lats);
 
     json::JSON obj;
+
+    // Named grammar paths end in opaque output labels.  N-best is useful for
+    // readable hypotheses, but it is not a reliable way to compare paths: a
+    // single path (notably a model fallback) can occupy several N-best slots.
+    // Compute the best lattice weight ending at every marker directly, so API
+    // consumers receive one score per supplied path from this same decode.
+    if (!grammar_path_ids_.empty()) {
+      std::vector<LatticeWeight> forward_costs;
+      fst::ShortestDistance(lat, &forward_costs);
+      std::vector<LatticeWeight> path_costs(
+          grammar_path_ids_.size(), LatticeWeight::Zero());
+
+      for (StateIterator<Lattice> state_iter(lat); !state_iter.Done();
+           state_iter.Next()) {
+        Lattice::StateId state = state_iter.Value();
+        if (forward_costs[state] == LatticeWeight::Zero())
+          continue;
+        for (ArcIterator<Lattice> arc_iter(lat, state); !arc_iter.Done();
+             arc_iter.Next()) {
+          const LatticeArc &arc = arc_iter.Value();
+          if (arc.olabel < grammar_path_label_base_ ||
+              arc.olabel >= grammar_path_label_base_ + grammar_path_ids_.size())
+            continue;
+
+          int32 path_index = arc.olabel - grammar_path_label_base_;
+          LatticeWeight cost = Times(forward_costs[state], arc.weight);
+          cost = Times(cost, lat.Final(arc.nextstate));
+          path_costs[path_index] = Plus(path_costs[path_index], cost);
+        }
+      }
+
+      for (int32 path_index = 0; path_index < path_costs.size(); path_index++) {
+        const LatticeWeight &cost = path_costs[path_index];
+        if (cost == LatticeWeight::Zero())
+          continue;
+        json::JSON path_score;
+        path_score["id"] = grammar_path_ids_[path_index];
+        path_score["confidence"] = -cost.Value1() - cost.Value2();
+        path_score["graph_likelihood"] = -cost.Value1();
+        path_score["acoustic_likelihood"] = -cost.Value2();
+        obj["path_scores"].append(path_score);
+      }
+    }
+
     for (int k = 0; k < nbest_lats.size(); k++) {
 
       Lattice nlat = nbest_lats[k];
@@ -719,10 +790,10 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
       DeterminizeLattice(nlat, &nclat);
 
       CompactLattice aligned_nclat;
-      // Route markers are output-only epsilon arcs, not vocabulary words.  The
+      // Path markers are output-only epsilon arcs, not vocabulary words. The
       // regular word aligner quite reasonably rejects them at a path end; the
       // unaligned lattice already retains the route and its score.
-      if (model_->winfo_ && grammar_route_ids_.empty()) {
+      if (model_->winfo_ && grammar_path_ids_.empty()) {
           WordAlignLattice(nclat, *model_->trans_model_, *model_->winfo_, 0, &aligned_nclat);
       } else {
           aligned_nclat = nclat;
@@ -749,9 +820,9 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
         json::JSON word;
         if (words[i] == 0)
             continue;
-        if (words[i] >= grammar_route_label_base_ &&
-            words[i] < grammar_route_label_base_ + grammar_route_ids_.size()) {
-            entry["grammar_route"] = grammar_route_ids_[words[i] - grammar_route_label_base_];
+        if (words[i] >= grammar_path_label_base_ &&
+            words[i] < grammar_path_label_base_ + grammar_path_ids_.size()) {
+            entry["grammar_path"] = grammar_path_ids_[words[i] - grammar_path_label_base_];
             continue;
         }
         if (words_) {
