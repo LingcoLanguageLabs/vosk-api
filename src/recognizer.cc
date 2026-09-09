@@ -738,49 +738,47 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
 
     json::JSON obj;
 
-    // Named grammar paths end in opaque output labels.  N-best is useful for
+    // Named grammar paths end in opaque labels stored in compact-lattice
+    // alignment strings. N-best is useful for
     // readable hypotheses, but it is not a reliable way to compare paths: a
     // single path (notably a model fallback) can occupy several N-best slots.
     // Compute the best lattice weight ending at every marker directly, so API
     // consumers receive one score per supplied path from this same decode.
     if (!grammar_path_ids_.empty()) {
-      std::vector<LatticeWeight> forward_costs;
-      fst::ShortestDistance(lat, &forward_costs);
-      std::vector<LatticeWeight> path_costs(
-          grammar_path_ids_.size(), LatticeWeight::Zero());
+      std::vector<CompactLattice::Weight> forward_costs;
+      fst::ShortestDistance(clat, &forward_costs);
+      std::vector<CompactLattice::Weight> path_costs(
+          grammar_path_ids_.size(), CompactLattice::Weight::Zero());
 
-      for (StateIterator<Lattice> state_iter(lat); !state_iter.Done();
+      for (StateIterator<CompactLattice> state_iter(clat); !state_iter.Done();
            state_iter.Next()) {
-        Lattice::StateId state = state_iter.Value();
-        if (forward_costs[state] == LatticeWeight::Zero())
+        CompactLattice::StateId state = state_iter.Value();
+        if (forward_costs[state] == CompactLattice::Weight::Zero())
           continue;
-        for (ArcIterator<Lattice> arc_iter(lat, state); !arc_iter.Done();
+        for (ArcIterator<CompactLattice> arc_iter(clat, state); !arc_iter.Done();
              arc_iter.Next()) {
-          const LatticeArc &arc = arc_iter.Value();
-          // ConvertLattice preserves the marker as an input label here. The
-          // N-best formatter inverts its lattice before turning labels into
-          // words, which is why the same marker appears as a grammar_path in
-          // its public hypothesis output.
-          if (arc.ilabel < grammar_path_label_base_ ||
-              arc.ilabel >= grammar_path_label_base_ + grammar_path_ids_.size())
-            continue;
-
-          int32 path_index = arc.ilabel - grammar_path_label_base_;
-          LatticeWeight cost = Times(forward_costs[state], arc.weight);
-          cost = Times(cost, lat.Final(arc.nextstate));
-          path_costs[path_index] = Plus(path_costs[path_index], cost);
+          const CompactLattice::Arc &arc = arc_iter.Value();
+          CompactLattice::Weight cost = Times(forward_costs[state], arc.weight);
+          cost = Times(cost, clat.Final(arc.nextstate));
+          for (int32 label : arc.weight.String()) {
+            if (label < grammar_path_label_base_ ||
+                label >= grammar_path_label_base_ + grammar_path_ids_.size())
+              continue;
+            int32 path_index = label - grammar_path_label_base_;
+            path_costs[path_index] = Plus(path_costs[path_index], cost);
+          }
         }
       }
 
       for (int32 path_index = 0; path_index < path_costs.size(); path_index++) {
-        const LatticeWeight &cost = path_costs[path_index];
-        if (cost == LatticeWeight::Zero())
+        const CompactLattice::Weight &cost = path_costs[path_index];
+        if (cost == CompactLattice::Weight::Zero())
           continue;
         json::JSON path_score;
         path_score["id"] = grammar_path_ids_[path_index];
-        path_score["confidence"] = -cost.Value1() - cost.Value2();
-        path_score["graph_likelihood"] = -cost.Value1();
-        path_score["acoustic_likelihood"] = -cost.Value2();
+        path_score["confidence"] = -cost.Weight().Value1() - cost.Weight().Value2();
+        path_score["graph_likelihood"] = -cost.Weight().Value1();
+        path_score["acoustic_likelihood"] = -cost.Weight().Value2();
         obj["path_scores"].append(path_score);
       }
     }
