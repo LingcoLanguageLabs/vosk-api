@@ -1,0 +1,22 @@
+name: Build Lingco Vosk wheels
+
+on:
+  push:
+    branches:
+      - lingco-vocabulary-margin
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manylinux wheel
+        run: |
+          docker pull alphacep/kaldi-manylinux:latest
+          docker run --rm -v "$PWD":/io alphacep/kaldi-manylinux:latest /io/travis/build-wheels.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vosk-linux-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
