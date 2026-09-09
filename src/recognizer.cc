@@ -749,24 +749,35 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
       fst::ShortestDistance(clat, &forward_costs);
       std::vector<CompactLattice::Weight> path_costs(
           grammar_path_ids_.size(), CompactLattice::Weight::Zero());
+      auto record_path_label = [&](int32 label,
+                                   const CompactLattice::Weight &cost) {
+        if (label < grammar_path_label_base_ ||
+            label >= grammar_path_label_base_ + grammar_path_ids_.size())
+          return;
+        int32 path_index = label - grammar_path_label_base_;
+        path_costs[path_index] = Plus(path_costs[path_index], cost);
+      };
 
       for (StateIterator<CompactLattice> state_iter(clat); !state_iter.Done();
            state_iter.Next()) {
         CompactLattice::StateId state = state_iter.Value();
         if (forward_costs[state] == CompactLattice::Weight::Zero())
           continue;
+        const CompactLattice::Weight &final = clat.Final(state);
+        if (final != CompactLattice::Weight::Zero()) {
+          CompactLattice::Weight cost = Times(forward_costs[state], final);
+          for (int32 label : final.String())
+            record_path_label(label, cost);
+        }
         for (ArcIterator<CompactLattice> arc_iter(clat, state); !arc_iter.Done();
              arc_iter.Next()) {
           const CompactLattice::Arc &arc = arc_iter.Value();
           CompactLattice::Weight cost = Times(forward_costs[state], arc.weight);
           cost = Times(cost, clat.Final(arc.nextstate));
-          for (int32 label : arc.weight.String()) {
-            if (label < grammar_path_label_base_ ||
-                label >= grammar_path_label_base_ + grammar_path_ids_.size())
-              continue;
-            int32 path_index = label - grammar_path_label_base_;
-            path_costs[path_index] = Plus(path_costs[path_index], cost);
-          }
+          record_path_label(arc.ilabel, cost);
+          record_path_label(arc.olabel, cost);
+          for (int32 label : arc.weight.String())
+            record_path_label(label, cost);
         }
       }
 
