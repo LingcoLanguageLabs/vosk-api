@@ -45,7 +45,8 @@ with open("README.md", "rb") as fh:
 
 setuptools.setup(
     name="vosk",
-    version="0.3.75",
+    # Keep fork-only native behavior distinguishable from upstream wheels.
+    version="0.3.75+lingco.1",
     author="Alpha Cephei Inc",
     author_email="contact@alphacephei.com",
     description="Offline open source speech recognition API based on Kaldi and Vosk",
