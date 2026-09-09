@@ -4,7 +4,8 @@ set -e -x
 # Build the checked-out source.  CI mounts the fork at /io, so cloning the
 # upstream repository here would silently discard fork-only native changes.
 cd /io/src
-KALDI_ROOT=/opt/kaldi OPENFST_ROOT=/opt/kaldi/tools/openfst OPENBLAS_ROOT=/opt/kaldi/tools/OpenBLAS/install make -j $(nproc)
+KALDI_ROOT=/opt/kaldi OPENFST_ROOT=/opt/kaldi/tools/openfst OPENBLAS_ROOT=/opt/kaldi/tools/OpenBLAS/install \
+  EXTRA_CFLAGS=-DVOSK_DISABLE_PARTIAL_WORDS=1 make -j $(nproc)
 
 # Copy dlls to output folder
 mkdir -p /io/wheelhouse/vosk-linux-x86_64

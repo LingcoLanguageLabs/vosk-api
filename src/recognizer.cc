@@ -933,7 +933,15 @@ const char* Recognizer::PartialResult()
 
         clat = decoder_->GetLattice(decoder_->NumFramesInLattice(), false);
         if (model_->winfo_) {
+#ifdef VOSK_DISABLE_PARTIAL_WORDS
+            // The published manylinux Kaldi image predates
+            // WordAlignLatticePartial.  Partial-word timestamps are optional;
+            // retain the partial hypothesis rather than making the entire
+            // native package unbuildable against that supported builder.
+            CopyLatticeForMbr(clat, &aligned_lat);
+#else
             WordAlignLatticePartial(clat, *model_->trans_model_, *model_->winfo_, 0, &aligned_lat);
+#endif
         } else {
             CopyLatticeForMbr(clat, &aligned_lat);
         }
