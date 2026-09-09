@@ -26,7 +26,9 @@ else:
         def get_tag(self):
             abi = 'none'
             if system == 'Darwin':
-                oses = 'macosx_10_6_universal2'
+                # A locally compiled native library only supports the current
+                # architecture; do not advertise it as universal2.
+                oses = 'macosx_11_0_arm64' if machine == 'arm64' else 'macosx_10_6_x86_64'
             elif system == 'Windows' and architecture == '32bit':
                 oses = 'win32'
             elif system == 'Windows' and architecture == '64bit':
