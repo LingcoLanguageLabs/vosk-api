@@ -102,6 +102,12 @@ class Recognizer {
 
         // Other
         int max_alternatives_ = 0; // Disable alternatives by default
+        // Structured grammars retain an opaque route marker at the end of
+        // every grammar path.  It lets clients compare accepted and reject
+        // paths from one decoder lattice without making a decoder call per
+        // candidate phrase.
+        std::vector<string> grammar_route_ids_;
+        int32 grammar_route_label_base_ = 1000000;
         bool words_ = false;
         bool partial_words_ = false;
         bool nlsml_ = false;

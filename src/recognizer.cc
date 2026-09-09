@@ -287,6 +287,7 @@ void Recognizer::SetGrm(char const *grammar)
     }
 
     delete decode_fst_;
+    grammar_route_ids_.clear();
 
     if (!strcmp(grammar, "[]")) {
         decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *model_->g_fst_, model_->disambig_);
@@ -323,6 +324,65 @@ void Recognizer::UpdateGrammarFst(char const *grammar)
 {
     json::JSON obj;
     obj = json::JSON::Load(grammar);
+
+    grammar_route_ids_.clear();
+
+    // The legacy API accepts an array of phrases and builds a small n-gram
+    // language model from it.  A route grammar is intentionally different:
+    // each phrase has an opaque terminal output label so N-best results can
+    // report which supplied route produced a path.  This is the foundation
+    // for a single-decode accepted-vs-reject comparison.
+    if (obj.JSONType() == json::JSON::Class::Object && obj.hasKey("routes")) {
+        const json::JSON &routes = obj.at("routes");
+        if (routes.JSONType() != json::JSON::Class::Array || routes.length() == 0) {
+            KALDI_WARN << "Expecting a non-empty routes array, got: '" << grammar << "'";
+            return;
+        }
+
+        delete g_fst_;
+        g_fst_ = new StdVectorFst();
+        StdVectorFst::StateId start = g_fst_->AddState();
+        g_fst_->SetStart(start);
+
+        for (int i = 0; i < routes.length(); i++) {
+            const json::JSON &route = routes.at(i);
+            if (route.JSONType() != json::JSON::Class::Object ||
+                !route.hasKey("id") || !route.hasKey("text")) {
+                KALDI_ERR << "Each grammar route requires string id and text fields";
+            }
+            bool id_ok, text_ok;
+            string id = route.at("id").ToString(id_ok);
+            string line = route.at("text").ToString(text_ok);
+            if (!id_ok || !text_ok) {
+                KALDI_ERR << "Each grammar route requires string id and text fields";
+            }
+
+            StdVectorFst::StateId state = start;
+            stringstream ss(line);
+            string token;
+            while (getline(ss, token, ' ')) {
+                int32 word_id = model_->word_syms_->Find(token);
+                if (word_id == kNoSymbol) {
+                    KALDI_WARN << "Ignoring word missing in vocabulary: '" << token << "'";
+                    continue;
+                }
+                StdVectorFst::StateId next = g_fst_->AddState();
+                g_fst_->AddArc(state, StdArc(word_id, word_id,
+                    TropicalWeight::One(), next));
+                state = next;
+            }
+
+            StdVectorFst::StateId final = g_fst_->AddState();
+            int32 route_label = grammar_route_label_base_ + i;
+            g_fst_->AddArc(state, StdArc(0, route_label,
+                TropicalWeight::One(), final));
+            g_fst_->SetFinal(final, TropicalWeight::One());
+            grammar_route_ids_.push_back(id);
+        }
+
+        decode_fst_ = LookaheadComposeFst(*model_->hcl_fst_, *g_fst_, model_->disambig_);
+        return;
+    }
 
     if (obj.length() <= 0) {
         KALDI_WARN << "Expecting array of strings, got: '" << grammar << "'";
@@ -659,7 +719,10 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
       DeterminizeLattice(nlat, &nclat);
 
       CompactLattice aligned_nclat;
-      if (model_->winfo_) {
+      // Route markers are output-only epsilon arcs, not vocabulary words.  The
+      // regular word aligner quite reasonably rejects them at a path end; the
+      // unaligned lattice already retains the route and its score.
+      if (model_->winfo_ && grammar_route_ids_.empty()) {
           WordAlignLattice(nclat, *model_->trans_model_, *model_->winfo_, 0, &aligned_nclat);
       } else {
           aligned_nclat = nclat;
@@ -671,7 +734,13 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
       CompactLattice::Weight weight;
 
       CompactLatticeToWordAlignmentWeight(aligned_nclat, &words, &begin_times, &lengths, &weight);
-      float likelihood = -(weight.Weight().Value1() + weight.Weight().Value2());
+      // Keep the legacy combined score, but expose its two components as well.
+      // A constrained-grammar client needs to distinguish acoustic evidence
+      // from the language-model preference introduced by the supplied phrase
+      // list.  This is backward-compatible for existing API consumers.
+      float graph_likelihood = -weight.Weight().Value1();
+      float acoustic_likelihood = -weight.Weight().Value2();
+      float likelihood = graph_likelihood + acoustic_likelihood;
 
       stringstream text;
       json::JSON entry;
@@ -680,6 +749,11 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
         json::JSON word;
         if (words[i] == 0)
             continue;
+        if (words[i] >= grammar_route_label_base_ &&
+            words[i] < grammar_route_label_base_ + grammar_route_ids_.size()) {
+            entry["grammar_route"] = grammar_route_ids_[words[i] - grammar_route_label_base_];
+            continue;
+        }
         if (words_) {
             word["word"] = model_->word_syms_->Find(words[i]);
             word["start"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + begin_times[i]) * 0.03;
@@ -697,6 +771,8 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
 
       entry["text"] = text.str();
       entry["confidence"]= likelihood;
+      entry["graph_likelihood"] = graph_likelihood;
+      entry["acoustic_likelihood"] = acoustic_likelihood;
       obj["alternatives"].append(entry);
     }
 
